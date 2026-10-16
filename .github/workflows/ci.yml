@@ -47,7 +47,8 @@ jobs:
           ./kubeconform -strict -summary -ignore-missing-schemas /tmp/catalog.yaml /tmp/orders.yaml
 
   build-push:
-    if: github.event_name == 'push'
+    # Skips cleanly until the GCP repo variables exist (see README > Deploy to GCP)
+    if: github.event_name == 'push' && vars.GCP_WIF_PROVIDER != ''
     needs: [test, lint-manifests]
     runs-on: ubuntu-latest
     permissions:
