@@ -1,0 +1,60 @@
+# One Argo CD Application per microservice, both rendered from the same chart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: catalog
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"   # after monitoring CRDs exist
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shivamsharma20work-afk/gke-gitops-platform.git
+    targetRevision: main
+    path: charts/microservice
+    helm:
+      releaseName: catalog
+      valueFiles:
+        - ../../deploy/prod/catalog.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true      # manual kubectl edits get reverted to what Git says
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff: { duration: 10s, factor: 2, maxDuration: 2m }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: orders
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"   # after catalog, which it depends on
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shivamsharma20work-afk/gke-gitops-platform.git
+    targetRevision: main
+    path: charts/microservice
+    helm:
+      releaseName: orders
+      valueFiles:
+        - ../../deploy/prod/orders.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff: { duration: 10s, factor: 2, maxDuration: 2m }

@@ -1,0 +1,55 @@
+# Alerts on the RED metrics both services export (app/metrics.py).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: shop-alerts
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: shop.recording
+      rules:
+        - record: service:http_requests:rate5m
+          expr: sum by (service) (rate(http_requests_total[5m]))
+        - record: service:http_errors:ratio5m
+          expr: |
+            sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+            / sum by (service) (rate(http_requests_total[5m]))
+        - record: service:http_latency_p95:5m
+          expr: |
+            histogram_quantile(0.95,
+              sum by (service, le) (rate(http_request_duration_seconds_bucket[5m])))
+
+    - name: shop.alerts
+      rules:
+        - alert: HighErrorRate
+          expr: service:http_errors:ratio5m > 0.05 and service:http_requests:rate5m > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.service }}: {{ $value | humanizePercentage }} of requests are failing (5xx)"
+            runbook: "Check `kubectl -n shop logs deploy/{{ $labels.service }}` and the last Argo CD sync. Roll back with `git revert` on the image bump commit."
+
+        - alert: HighLatencyP95
+          expr: service:http_latency_p95:5m > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.service }}: p95 latency is {{ $value | humanizeDuration }} (> 500ms)"
+
+        - alert: ServiceDown
+          expr: up{namespace="shop"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pod }} is not being scraped (down or crashlooping)"
+
+        - alert: PodRestartingOften
+          expr: increase(kube_pod_container_status_restarts_total{namespace="shop"}[30m]) > 3
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} restarted {{ $value }} times in 30m"

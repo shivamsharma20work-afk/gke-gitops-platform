@@ -1,0 +1,8 @@
+# Argo CD renders charts/microservice with this file.
+# image.tag is updated by CI on every merge to main; do not edit by hand.
+image:
+  repository: asia-south1-docker.pkg.dev/PROJECT_ID/shop/catalog
+  tag: "0.1.0"
+
+env:
+  FAULT_RATE: "0"

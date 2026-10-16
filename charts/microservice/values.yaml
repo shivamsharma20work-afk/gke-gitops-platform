@@ -1,0 +1,46 @@
+# Defaults for every service. Per-service overrides live in deploy/<env>/<service>.yaml
+
+image:
+  repository: ""
+  tag: ""          # CI writes the git SHA here; Argo CD rolls it out
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+containerPort: 8080
+
+env: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilization: 70
+
+podDisruptionBudget:
+  minAvailable: 1
+
+probes:
+  liveness: /healthz
+  readiness: /readyz
+
+service:
+  type: ClusterIP
+  port: 80
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  # kube-prometheus-stack only picks up ServiceMonitors with this label
+  labels:
+    release: monitoring
+
+serviceAccount:
+  # Workload Identity: annotate with a GCP SA if the service needs GCP APIs
+  annotations: {}

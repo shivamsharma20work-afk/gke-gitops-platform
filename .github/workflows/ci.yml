@@ -1,0 +1,97 @@
+# CI builds and publishes images. It never touches the cluster.
+# The last job commits the new image tag to deploy/prod/*.yaml, and Argo CD
+# notices the Git change and rolls it out. Git is the only path to prod.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["deploy/**", "**.md"]   # tag-bump commits must not retrigger CI
+  pull_request:
+
+env:
+  REGION: asia-south1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [catalog, orders]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run pytest -q
+
+  lint-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint + render
+        run: |
+          for svc in catalog orders; do
+            helm lint charts/microservice -f deploy/prod/$svc.yaml
+            helm template $svc charts/microservice -f deploy/prod/$svc.yaml > /tmp/$svc.yaml
+          done
+      - name: kubeconform (schema check, CRDs skipped)
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary -ignore-missing-schemas /tmp/catalog.yaml /tmp/orders.yaml
+
+  build-push:
+    if: github.event_name == 'push'
+    needs: [test, lint-manifests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for Workload Identity Federation
+    strategy:
+      matrix:
+        service: [catalog, orders]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SA }}
+      - run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+      - name: Build
+        run: |
+          IMAGE=$REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/shop/${{ matrix.service }}:${GITHUB_SHA::7}
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          docker build -t $IMAGE services/${{ matrix.service }}
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - run: docker push $IMAGE
+
+  bump-tags:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point deploy/prod at the new images
+        run: |
+          TAG=${GITHUB_SHA::7}
+          REG=$REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/shop
+          for svc in catalog orders; do
+            yq -i ".image.repository = \"$REG/$svc\" | .image.tag = \"$TAG\"" deploy/prod/$svc.yaml
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "deploy: catalog, orders -> $TAG"
+          git push
